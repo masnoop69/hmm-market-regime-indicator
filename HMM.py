@@ -495,6 +495,8 @@ class gaussianHMM:
         else:
             raise ValueError("Type must be 'probability', 'posterior' or 'viterbi'.")
 
+
+# =============== Visualization Tools =====================
 def plot_regimes(price, regimes, hmm=None, returns=None, gamma=None, index=None, title=None):
     """
     Plots price (top) with regime shading, optionally state probabilities (middle),
@@ -675,3 +677,386 @@ def plot_regimes(price, regimes, hmm=None, returns=None, gamma=None, index=None,
 
     fig.show()
 
+
+def plot_regime_distributions(hmm, returns=None, x_range=(-0.08, 0.08), n_points=500,
+                               height=600, width=900, title=None):
+    """
+    Plot the Gaussian PDF for each regime and the overall mixture distribution.
+
+    The mixture weights are derived from the stationary distribution of the
+    fitted transition matrix (i.e. the long-run fraction of time spent in each
+    regime).  If observed returns are provided, an empirical histogram is shown
+    underneath for visual comparison.
+
+    Parameters
+    ----------
+    hmm : gaussianHMM
+        A fitted gaussianHMM instance (must have .mu, .sigma, .A attributes).
+    returns : array-like or pd.Series, optional
+        Observed returns to overlay as a density histogram.
+    x_range : tuple, default (-0.08, 0.08)
+        Range of x-axis (daily return values) to plot over.
+    n_points : int, default 500
+        Number of evaluation points for the smooth PDF curves.
+    height : int, default 600
+        Figure height in pixels.
+    width : int, default 900
+        Figure width in pixels.
+    title : str, optional
+        Custom chart title.
+
+    Returns
+    -------
+    fig : plotly.graph_objects.Figure
+    """
+    import plotly.graph_objects as go
+    from scipy.stats import norm
+
+    N = hmm.n_states
+    x = np.linspace(x_range[0], x_range[1], n_points)
+
+    # ── Stationary distribution from transition matrix (π A = π) ──
+    # Solve by finding the left eigenvector with eigenvalue 1.
+    eigvals, eigvecs = np.linalg.eig(hmm.A.T)
+    idx = np.argmin(np.abs(eigvals - 1.0))            # closest eigenvalue to 1
+    stationary = np.real(eigvecs[:, idx])
+    stationary = stationary / stationary.sum()         # normalise
+
+    # ── Colour palette (red → yellow → green, matching plot_regimes) ──
+    def _color(state_idx, alpha=1.0):
+        t = state_idx / max(N - 1, 1)
+        r, g = int(255 * (1 - t)), int(255 * t)
+        return f'rgba({r},{g},0,{alpha})'
+
+    fig = go.Figure()
+
+    # ── Optional: empirical histogram ──
+    if returns is not None:
+        import pandas as pd
+        ret_vals = np.asarray(returns).flatten()
+        if hasattr(returns, 'values'):
+            ret_vals = returns.values.flatten()
+        hist_bins = np.linspace(x_range[0], x_range[1], 100)
+        counts, edges = np.histogram(ret_vals, bins=hist_bins, density=True)
+        centers = (edges[:-1] + edges[1:]) / 2
+        fig.add_trace(go.Bar(
+            x=centers, y=counts,
+            name='Observed Returns',
+            marker_color='rgba(200, 200, 200, 0.35)',
+            showlegend=True,
+        ))
+
+    # ── Individual regime PDFs ──
+    mixture_pdf = np.zeros_like(x)
+    for s in range(N):
+        pdf = norm.pdf(x, hmm.mu[s], hmm.sigma[s])
+        weighted = stationary[s] * pdf
+        mixture_pdf += weighted
+
+        fig.add_trace(go.Scatter(
+            x=x, y=pdf,
+            mode='lines',
+            line=dict(color=_color(s, 0.8), width=2),
+            name=f'Regime {s}  (μ={hmm.mu[s]*100:.3f}%, σ={hmm.sigma[s]*100:.3f}%, π={stationary[s]:.2%})',
+            fill='tozeroy',
+            fillcolor=_color(s, 0.12),
+        ))
+
+    # ── Mixture (overall market distribution) ──
+    fig.add_trace(go.Scatter(
+        x=x, y=mixture_pdf,
+        mode='lines',
+        line=dict(color='white', width=3),
+        name='Market Distribution (Mixture)',
+    ))
+
+    # ── Fitted overall Normal (dotted blue) ──
+    # Weighted mean and std from stationary distribution
+    overall_mu = np.sum(stationary * hmm.mu)
+    overall_var = np.sum(stationary * (hmm.sigma**2 + hmm.mu**2)) - overall_mu**2
+    overall_sigma = np.sqrt(overall_var)
+    fig.add_trace(go.Scatter(
+        x=x, y=norm.pdf(x, overall_mu, overall_sigma),
+        mode='lines',
+        line=dict(color='rgba(80, 140, 255, 1)', width=2, dash='dot'),
+        name=f'Fitted Normal  (μ={overall_mu*100:.3f}%, σ={overall_sigma*100:.3f}%)',
+    ))
+
+    fig.update_layout(
+        title=dict(
+            text=title or f'Regime Distributions ({N}-State Gaussian HMM)',
+            font=dict(size=14, family='Arial', color='white'),
+        ),
+        xaxis_title='Daily Return',
+        yaxis_title='Density',
+        height=height,
+        width=width,
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='white'),
+        bargap=0,
+        legend=dict(
+            yanchor='top', y=0.99,
+            xanchor='left', x=1.01,
+            font=dict(family='monospace', size=11),
+        ),
+    )
+    fig.update_xaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)',
+                     zerolinecolor='rgba(128,128,128,0.5)')
+    fig.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)',
+                     zerolinecolor='rgba(128,128,128,0.5)')
+
+    return fig
+
+
+def plot_rolling_distribution(
+    returns,
+    window=252 * 4,
+    step=21,
+    start=None,
+    end=None,
+    bins=None,
+    x_display_range=(-0.07, 0.07),
+    y_range=(0, 80),
+    frame_duration=50,
+    height=600,
+    width=1000,
+    title_prefix="Rolling Returns Distribution",
+    dark=True,
+):
+    """
+    Animate the rolling return distribution over time with a draggable slider.
+
+    Displays three overlaid layers per frame:
+      1. Empirical histogram (bar chart, density-normalised)
+      2. Kernel Density Estimate (KDE) smooth curve
+      3. Fitted Normal distribution (dashed)
+
+    Parameters
+    ----------
+    returns : pd.Series or pd.DataFrame
+        Daily return series (if DataFrame, first column is used).
+    window : int, default 1008 (≈ 4 trading years)
+        Number of observations in each rolling window.
+    step : int, default 21 (≈ 1 trading month)
+        Step size between successive frames.
+    start : str or None
+        Start date for subsetting (inclusive). Example: '2001-12-31'.
+    end : str or None
+        End date for subsetting (inclusive). Example: '2025-12-31'.
+    bins : np.ndarray or None
+        Custom bin edges for the histogram. Defaults to
+        ``np.linspace(-0.12, 0.12, 100)``.
+    x_display_range : tuple, default (-0.07, 0.07)
+        x-axis display range for the KDE / normal curves.
+    y_range : tuple, default (0, 80)
+        y-axis display range (density).
+    frame_duration : int, default 100
+        Milliseconds per frame during playback.
+    height : int, default 600
+        Figure height in pixels.
+    width : int, default 1000
+        Figure width in pixels.
+    title_prefix : str
+        Prefix shown before the window-end date in the title.
+    dark : bool, default True
+        If True, uses a transparent / dark background with white text.
+        If False, uses a light Plotly theme.
+
+    Returns
+    -------
+    fig : plotly.graph_objects.Figure
+        The animated figure (call ``fig.show()`` to render).
+    """
+    import pandas as pd
+    import plotly.graph_objects as go
+    from scipy.stats import norm, gaussian_kde
+
+    # ── Coerce input ──
+    if isinstance(returns, pd.DataFrame):
+        returns = returns.iloc[:, 0]
+    returns = returns.copy()
+
+    # ── Subset by date ──
+    if start or end:
+        returns = returns.loc[start:end]
+
+    # ── Histogram bins ──
+    if bins is None:
+        bins = np.linspace(-0.12, 0.12, 100)
+    bin_centers = (bins[:-1] + bins[1:]) / 2
+
+    # ── Build per-frame data ──
+    frames_data = []
+    dates = []
+
+    for i in range(0, len(returns) - window, step):
+        window_data = returns.iloc[i : i + window].values.flatten()
+        end_date = returns.index[i + window]
+        dates.append(end_date.strftime('%Y-%m-%d') if hasattr(end_date, 'strftime') else str(end_date))
+
+        mean = np.mean(window_data)
+        std  = np.std(window_data)
+        kde  = gaussian_kde(window_data)
+        counts, _ = np.histogram(window_data, bins=bins, density=True)
+
+        frames_data.append({
+            'counts': counts,
+            'mean':   mean,
+            'std':    std,
+            'kde':    kde,
+        })
+
+    if not frames_data:
+        raise ValueError(
+            f"Not enough data to form even one window "
+            f"(need {window} observations, got {len(returns)})."
+        )
+
+    # ── Smooth x grid for KDE / normal curves ──
+    x_range = np.linspace(x_display_range[0], x_display_range[1], 500)
+
+    # ── Initial traces ──
+    init = frames_data[0]
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        x=bin_centers, y=init['counts'],
+        name='Empirical Data',
+        marker_color='rgba(0, 255, 255, 0.6)',
+    ))
+    fig.add_trace(go.Scatter(
+        x=x_range, y=init['kde'](x_range),
+        mode='lines',
+        line=dict(color='rgba(255, 0, 255, 1)', width=3),
+        name='Optimal KDE Fit',
+    ))
+    fig.add_trace(go.Scatter(
+        x=x_range,
+        y=norm.pdf(x_range, init['mean'], init['std']),
+        mode='lines',
+        line=dict(color='rgba(255, 255, 0, 1)', width=2, dash='dash'),
+        name='Fitted Normal',
+    ))
+
+    # ── Animation frames ──
+    frames = []
+    for idx, fd in enumerate(frames_data):
+        frames.append(go.Frame(
+            data=[
+                go.Bar(
+                    x=bin_centers, y=fd['counts'],
+                    marker_color='rgba(0, 255, 255, 0.6)',
+                ),
+                go.Scatter(
+                    x=x_range, y=fd['kde'](x_range),
+                    mode='lines',
+                    line=dict(color='rgba(255, 0, 255, 1)', width=3),
+                ),
+                go.Scatter(
+                    x=x_range,
+                    y=norm.pdf(x_range, fd['mean'], fd['std']),
+                    mode='lines',
+                    line=dict(color='rgba(255, 255, 0, 1)', width=2, dash='dash'),
+                ),
+            ],
+            name=str(idx),
+            layout=go.Layout(
+                title_text=f"{title_prefix} ({window // 252}-Year Window ending: {dates[idx]})"
+            ),
+        ))
+    fig.frames = frames
+
+    # ── Slider steps ──
+    slider_steps = []
+    for idx, date in enumerate(dates):
+        slider_steps.append(dict(
+            method='animate',
+            args=[
+                [str(idx)],                              # frame name to jump to
+                dict(
+                    mode='immediate',
+                    frame=dict(duration=0, redraw=True),  # instant jump when scrubbing
+                    transition=dict(duration=0),
+                ),
+            ],
+            label=date,
+        ))
+
+    sliders = [dict(
+        active=0,
+        currentvalue=dict(
+            prefix='Window ending: ',
+            font=dict(size=13),
+        ),
+        pad=dict(t=50),
+        steps=slider_steps,
+    )]
+
+    # ── Play / Pause buttons ──
+    updatemenus = [dict(
+        type='buttons',
+        showactive=False,
+        y=-0.12,
+        x=0.08,
+        xanchor='right',
+        yanchor='top',
+        buttons=[
+            dict(
+                label='▶ Play',
+                method='animate',
+                args=[
+                    None,
+                    dict(
+                        frame=dict(duration=frame_duration, redraw=True),
+                        fromcurrent=True,
+                        mode='immediate',
+                    ),
+                ],
+            ),
+            dict(
+                label='⏸ Pause',
+                method='animate',
+                args=[
+                    [None],
+                    dict(
+                        frame=dict(duration=0, redraw=False),
+                        mode='immediate',
+                    ),
+                ],
+            ),
+        ],
+    )]
+
+    # ── Layout ──
+    bg  = 'rgba(0,0,0,0)' if dark else 'white'
+    fg  = 'white'          if dark else 'black'
+    grid_color = 'rgba(128,128,128,0.2)' if dark else 'rgba(200,200,200,0.5)'
+    zero_color = 'rgba(128,128,128,0.5)' if dark else 'rgba(150,150,150,0.7)'
+
+    fig.update_layout(
+        title=f"{title_prefix} ({window // 252}-Year Window ending: {dates[0]})",
+        xaxis_title='Daily Return',
+        yaxis_title='Density',
+        height=height,
+        width=width,
+        plot_bgcolor=bg,
+        paper_bgcolor=bg,
+        font=dict(color=fg),
+        bargap=0,
+        sliders=sliders,
+        updatemenus=updatemenus,
+    )
+
+    fig.update_xaxes(
+        showgrid=True, gridcolor=grid_color,
+        zerolinecolor=zero_color,
+        range=list(x_display_range),
+    )
+    fig.update_yaxes(
+        showgrid=True, gridcolor=grid_color,
+        zerolinecolor=zero_color,
+        range=list(y_range),
+    )
+
+    return fig
