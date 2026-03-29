@@ -41,6 +41,9 @@ Because each state (regime) defines its own $\mu$ and $\sigma$, the overall dist
 Here is a quick infographic by Gemini that illustrates this point.
 <img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/817aee79-ccc0-4c07-8d56-3c60524406f4" />
 
+Here is the actual empirical plot.
+<img width="900" height="600" alt="newplot" src="https://github.com/user-attachments/assets/f6900509-c32f-44b6-8818-063bbcede6fc" />
+
 
 ---
 
