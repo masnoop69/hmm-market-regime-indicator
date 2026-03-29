@@ -393,21 +393,21 @@ $$c_t = P(O_t \mid O_{0:t-1}, \lambda)$$
 
 For **alpha**, the cumulative scaling product runs forward from the start:
 
-$$\text{total\_probability\_scale}_t = c_0 \cdot c_1 \cdot \ldots \cdot c_t = P(O_{0:t} \mid \lambda)$$
+$$C_t = c_0 \cdot c_1 \cdot \ldots \cdot c_t = P(O_{0:t} \mid \lambda)$$
 
-$$\hat{\alpha}_t(j) = \frac{\alpha_t(j)}{\text{total\_probability\_scale}_t}$$
+$$\hat{\alpha}_t(j) = \frac{\alpha_t(j)}{C_t}$$
 
-And we achieve this by dividing alpha by $c_t$ at each forward step, since the cumulative product grows by one factor each time.
+Where $C_t$ is `total_probability_scale_t` in the code. We achieve this by dividing alpha by $c_t$ at each forward step, since the cumulative product grows by one factor each time.
 
 For **beta**, the cumulative scaling product runs backward from the end:
 
-$$\text{total\_probability\_scale}_{t+1} = c_{t+1} \cdot c_{t+2} \cdot \ldots \cdot c_{T-1} = P(O_{t+1:T-1} \mid O_{0:t}, \lambda)$$
+$$C_{t+1}^{\leftarrow} = c_{t+1} \cdot c_{t+2} \cdot \ldots \cdot c_{T-1} = P(O_{t+1:T-1} \mid O_{0:t}, \lambda)$$
 
-$$\hat{\beta}_t(j) = \frac{\beta_t(j)}{\text{total\_probability\_scale}_{t+1}}$$
+$$\hat{\beta}_t(j) = \frac{\beta_t(j)}{C_{t+1}^{\leftarrow}}$$
 
-To achieve this cumulative product, we divide by $c_{t+1}$ at each backward step:
+Where $C_{t+1}^{\leftarrow}$ is `total_probability_scale_t+1` in the code. To achieve this cumulative product, we divide by $c_{t+1}$ at each backward step:
 
-$$\hat{\beta}_t(j) = \frac{\text{unscaled } \beta_t(j)}{c_{t+1} \cdot c_{t+2} \cdot \ldots \cdot c_{T-1}}$$
+$$\hat{\beta}_t(j) = \frac{\beta_t(j)}{c_{t+1} \cdot c_{t+2} \cdot \ldots \cdot c_{T-1}}$$
 
 Since the recursion works backwards from $T-2$ down to $0$, each step accumulates one more scaling factor. At $t = T-2$, we divide by $c_{T-1}$ (one factor). At $t = T-3$, the previous beta was already divided by $c_{T-1}$, and now we divide by $c_{T-2}$ as well (two factors). By the time we reach $t = 0$, beta has been divided by the full product $c_1 \cdot c_2 \cdot \ldots \cdot c_{T-1}$.
 
@@ -560,7 +560,7 @@ This is a **gamma-weighted average** of all observations. Every observation in t
 
 **Update $\sigma_j$** — State-specific standard deviation:
 
-$$(\sigma_j^*)^2 = \frac{\sum_{t=0}^{T-1} \gamma_t(j) \cdot (O_t - \mu_j^*)^2}{\sum_{t=0}^{T-1} \gamma_t(j)}$$
+$$\hat{\sigma}_j^2 = \frac{\sum_{t=0}^{T-1} \gamma_t(j) \cdot (O_t - \hat{\mu}_j)^2}{\sum_{t=0}^{T-1} \gamma_t(j)}$$
 
 Similarly, this is the gamma-weighted variance — the spread of observations around $\mu_j$, where each observation's contribution is weighted by the model's confidence that it belongs to state $j$.
 
@@ -635,6 +635,9 @@ Where `prob[i, j]` is the log-probability of the best path arriving at state $i$
 **Pros:** Always produces a valid sequence consistent with the transition matrix.
 
 **Cons:** Optimizes the full path, not individual states — a single state assignment might be suboptimal if it produces a better overall path.
+
+
+<img width="1484" height="900" alt="newplot" src="https://github.com/user-attachments/assets/f907f72c-1868-4558-95b6-77e2c166b724" />
 
 ---
 
@@ -801,6 +804,9 @@ This could be parameterized as a Poisson, Negative Binomial, or log-normal distr
 
 An interesting observation from the gamma (state probability) panel is that regime transitions are rarely instantaneous — the probability of the incoming regime **ramps up gradually** before the transition is confirmed by the Viterbi path. This "acceleration" of state probability could serve as an early warning signal.
 
+<img width="1484" height="900" alt="acceleRATION" src="https://github.com/user-attachments/assets/059b75ad-b165-47d1-9381-dcc5860226ff" />
+
+As observed, nearing to a regime change, the gradient of the probability of the incoming regime change might be a predictive indicator.
 ---
 
 ## References
