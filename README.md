@@ -38,6 +38,10 @@ Because each state (regime) defines its own $\mu$ and $\sigma$, the overall dist
 - Each regime has its own **mean return** ($\mu_j$) and **volatility** ($\sigma_j$)
 - The model learns to switch between regimes based on observed data
 
+Here is a quick infographic by Gemini that illustrates this point.
+<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/817aee79-ccc0-4c07-8d56-3c60524406f4" />
+
+
 ---
 
 ## 2. A Primer on Bayesian Statistics
