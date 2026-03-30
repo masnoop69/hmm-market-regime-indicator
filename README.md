@@ -79,7 +79,7 @@ Suppose you want to know if the market is currently in a "crisis" regime ($H$), 
 
 Plugging in:
 
-$$P(\text{Crisis} \mid -5\%) = \frac{0.05 \times 0.10}{0.05 \times 0.10 + 0.00001 \times 0.90} = \frac{0.005}{0.005009} \approx 99.8\%$$
+P(Crisis | -5%) = (0.05 × 0.10) / (0.05 × 0.10 + 0.00001 × 0.90) ≈ 99.8%
 
 Even though the prior probability of crisis was only 10%, a single -5% return is so unlikely under the calm regime that our posterior jumps to 99.8%. The evidence has overwhelmed the prior. This is the power of Bayesian updating — the data speaks for itself.
 
