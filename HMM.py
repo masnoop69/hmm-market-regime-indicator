@@ -360,28 +360,31 @@ class gaussianHMM:
 
         return self
 
-    def _predict_proba(self):
+    def _predict_proba(self, mode=None):
         """
-        Returns the posterior probabilities of each state (Gamma). 
+        Returns the posterior probabilities of each state
+        (Alpha for causal, or Gamma otherwise).
         """
-        # compute gamma for state confidence at time t
         self._forward()
+    
+        if mode == 'infer':
+            return self.alpha
+    
         self._backward()
         self._compute_gamma()
-
         return self.gamma
-
-    def _predict_posterior(self):
+    
+    def _predict_posterior(self, mode=None):
         """
         Returns the most likely state at each time step (Posterior Decoding) through argmax of gamma, 
         the highest confidence state at time t.
-
+    
         However, this may result in impossible transitions, like from bear to bull instantly.
         """
-        gamma = self._predict_proba()
-        return np.argmax(gamma, axis=1)
+        gamma_or_alpha = self._predict_proba(mode)
+        return np.argmax(gamma_or_alpha, axis=1)
     
-    def _predict_viterbi(self):
+    def _predict_viterbi(self, mode=None):
         """
         Returns the most likely sequence of states (Viterbi Decoding).
         Uses log-probabilities for numerical stability.
@@ -396,35 +399,54 @@ class gaussianHMM:
         log_pi = np.log(self.pi + 1e-12)
         log_A = np.log(self.A + 1e-12)
         log_emission = np.log(self.emission + 1e-12)
-
+    
         # viterbi[t, j]: max log-prob of state j at time t
         # backpointer[t, j]: state at t-1 that maximizes log-prob of state j at time t
         viterbi = np.zeros((T, N))
         backpointer = np.zeros((T, N), dtype=int)
-
+    
         # 1. initialization step
         viterbi[0] = log_pi + log_emission[0]
-
+    
+        # If doing causal inference, we must decide the state at each time t
+        # without looking ahead or backtracking from the future.
+        if mode == "infer":
+            path = np.zeros(T, dtype=int)
+            path[0] = np.argmax(viterbi[0])
+    
         # 2. recursion step
         for t in range(1, T):
-            # prob shape: (N, N) where prob[i, j] is the log-prob of transitioning from state i at t-1 to state j at t
-            # viterbi[t-1][:, np.newaxis] broadcasts the previous max log-probs to column shape (N, 1)
+            # prob shape: (N, N) where prob[i, j] is the log-prob of transitioning
+            # from state i at t-1 to state j at t
+            # viterbi[t-1][:, np.newaxis] broadcasts the previous max log-probs
+            # to column shape (N, 1)
             # log_A is shape (N, N)
             prob = viterbi[t-1][:, np.newaxis] + log_A
             
             # Max over the previous states (axis=0). Resulting shape: (N,)
             viterbi[t, :] = np.max(prob, axis=0) + log_emission[t, :]
-            
-            # Argmax over the previous states (axis=0) to find the best previous state for each current state.
+    
+            # Argmax over the previous states (axis=0) to find the best previous
+            # state for each current state.
             backpointer[t, :] = np.argmax(prob, axis=0)
-
-        # 3. path reconstruction (backtracking)
+    
+            # In causal / online mode, choose the most likely state at time t
+            # immediately using only information up to time t.
+            if mode == "infer":
+                path[t] = np.argmax(viterbi[t])
+    
+        # 3. path reconstruction
+        if mode == "infer":
+            # Causal mode: no backtracking, because backtracking uses future information.
+            return path
+    
+        # Default mode: standard offline Viterbi with backtracking (non-causal)
         path = np.zeros(T, dtype=int)
         path[T-1] = np.argmax(viterbi[T-1])
-
+    
         for t in range(T-2, -1, -1):
             path[t] = backpointer[t+1, path[t+1]]
-
+    
         return path
 
 # ==================== Pubic API and Methods =====================
@@ -472,7 +494,7 @@ class gaussianHMM:
 
         return self
 
-    def predict(self, X, type = 'probability'):
+    def predict(self, X, type = 'probability', mode = None):
         """
         Predict the probabilities of each state (Gamma), the most likely state at each time step (Posterior Decoding), 
         or the most likely sequence of states (Viterbi Decoding).
@@ -487,11 +509,11 @@ class gaussianHMM:
         self.T = len(X)
 
         if type == 'probability':
-            return self._predict_proba()
+            return self._predict_proba(mode)
         elif type == 'posterior':
-            return self._predict_posterior()
+            return self._predict_posterior(mode)
         elif type =='viterbi':
-            return self._predict_viterbi()
+            return self._predict_viterbi(mode)
         else:
             raise ValueError("Type must be 'probability', 'posterior' or 'viterbi'.")
 
