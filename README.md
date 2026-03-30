@@ -583,7 +583,7 @@ The algorithm iterates E-step → M-step until the change in log-likelihood betw
 
 ## 11. Decoding: Viterbi vs Posterior
 
-After the model is fitted, we want to **decode** the hidden states — i.e., determine which regime the market was in at each time step. There are two approaches, each with different trade-offs.
+After the model is fitted, we want to **decode** the hidden states — i.e., determine which regime the market was in at each time step. There are two standard approaches (both "offline" — they use the full dataset), and a **causal / online** mode that uses no future data.
 
 ### Posterior Decoding
 
@@ -643,6 +643,53 @@ Where `prob[i, j]` is the log-probability of the best path arriving at state $i$
 
 **Cons:** Optimizes the full path, not individual states — a single state assignment might be suboptimal if it produces a better overall path.
 
+### Causal / Online Inference (`mode='infer'`)
+
+Both Posterior and Viterbi decoding described above are **offline** methods — they use the **entire** observation sequence, including future data, to determine the state at any given time $t$. This is fine for historical analysis ("what regime was the market in during 2008?"), but **unusable for live trading or real-time decision-making**, where future data simply does not exist.
+
+The `mode='infer'` option produces **strictly causal** predictions that use only data available at or before time $t$ to determine the state at time $t$. No future information is used at any point in the inference process. This is the mode you would use in production.
+
+#### How It Differs
+
+The causal mode modifies all three prediction types:
+
+| Prediction Type | Offline (default) | Causal (`mode='infer'`) |
+|---|---|---|
+| `'probability'` | Returns $\gamma$ (Forward × Backward) — uses past **and future** | Returns $\hat{\alpha}$ (Forward only) — uses **only past and present** |
+| `'posterior'` | $\arg\max_j \gamma_t(j)$ | $\arg\max_j \hat{\alpha}_t(j)$ |
+| `'viterbi'` | Backtracking from $T$-1 to reconstruct globally optimal path | Greedy $\arg\max_j V_t(j)$ at each $t$ — no backtracking |
+
+#### Causal Probability: Forward-Only Filtering
+
+In the default mode, `predict(X, type='probability')` runs the full Forward-Backward algorithm and returns $\gamma$ — our belief about the hidden state at time $t$ given the **entire** sequence $O_{0:T-1}$. The Backward pass introduces future information: $\beta_t(j)$ summarizes the evidence from $O_{t+1}, O_{t+2}, \ldots, O_{T-1}$.
+
+In causal mode, we **skip the Backward pass entirely** and return the scaled $\hat{\alpha}$ directly. Recall that the scaled alpha already has a clean interpretation:
+
+$$\hat{\alpha}_t(j) = P(q_t = j \mid O_{0:t}, \lambda)$$
+
+This is the **filtered** state distribution — our best estimate of which regime we are in at time $t$, using only observations up to and including $t$. It is exactly what a trader would have available at market close on day $t$: all historical data plus today's return, but nothing from tomorrow.
+
+The key difference from $\gamma$ is that $\hat{\alpha}$ tends to be **less decisive**. Without future evidence to confirm or deny a regime change, the causal filter might spread probability more evenly across states during transition periods. For example, $\gamma$ might say "95% bull" on a day where the next week of data confirms the bull regime, while $\hat{\alpha}$ might only say "70% bull" because it hasn't seen that confirming evidence yet.
+
+#### Causal Viterbi: Greedy Forward Decoding
+
+Standard Viterbi finds the globally optimal state **sequence** by backtracking from the final time step. The backtracking step is inherently non-causal — the state assigned at $t = 0$ depends on what happens at $t = T\text{-}1$. A state assignment might be retroactively changed because a different choice produces a better overall path.
+
+Causal Viterbi eliminates backtracking entirely. At each time step $t$, we simply take:
+
+$$\hat{q}_t = \arg\max_j \; V_t(j)$$
+
+This commits to the best state at time $t$ using only the Viterbi scores accumulated from $t = 0$ to $t$. The decision is **irrevocable** — once the state at time $t$ is chosen, it is never revisited.
+
+This is a **greedy** algorithm: it makes the locally optimal choice at each step without guaranteeing global optimality. In practice, it tends to agree with the standard Viterbi path most of the time, but may differ during ambiguous transition periods where the globally optimal path requires "looking ahead" to resolve the ambiguity.
+
+#### When to Use Causal Inference
+
+- **Live trading / real-time signals:** You must use `mode='infer'` because future data does not exist.
+- **Backtesting strategies:** You **should** use `mode='infer'` to avoid lookahead bias. Using the default offline mode in a backtest is equivalent to trading with future information — your backtest results will be unrealistically good.
+- **Historical analysis / research:** Use the default offline mode for the most accurate state assignments.
+
+> **⚠️ Warning:** Using offline decoding (default mode) in a backtest introduces **lookahead bias**. The Backward pass and Viterbi backtracking both use future observations to determine today's regime. Any strategy built on these signals will appear more profitable in backtests than it would in live trading.
 
 <img width="1484" height="900" alt="newplot" src="https://github.com/user-attachments/assets/f907f72c-1868-4558-95b6-77e2c166b724" />
 
@@ -681,11 +728,15 @@ close = spy['Close'].dropna()
 hmm = gaussianHMM(n_states=3, max_iter=100, tol=1e-6)
 hmm.fit(returns, sort='sharpe')
 
-# 4. Predict regimes
+# 4. Predict regimes (offline — uses full dataset including future)
 viterbi_states = hmm.predict(returns, type='viterbi')
 probability_states = hmm.predict(returns, type='probability')
 
-# 5. Visualize
+# 5. Predict regimes (causal — no future data used)
+causal_states = hmm.predict(returns, type='viterbi', mode='infer')
+causal_proba = hmm.predict(returns, type='probability', mode='infer')
+
+# 6. Visualize
 plot_regimes(
     close,
     viterbi_states,
@@ -746,22 +797,31 @@ Fit the HMM to observation sequence `X` using Baum-Welch.
 - `hmm.mu` — State means $(N,)$
 - `hmm.sigma` — State standard deviations $(N,)$
 
-### `.predict(X, type='probability')`
+### `.predict(X, type='probability', mode=None)`
 
 Predict hidden states for observation sequence `X` using the fitted parameters.
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `X` | array-like | Observation sequence (can be unseen data) |
-| `type` | str | `'probability'`, `'posterior'`, or `'viterbi'` |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `X` | array-like | — | Observation sequence (can be unseen data) |
+| `type` | str | `'probability'` | `'probability'`, `'posterior'`, or `'viterbi'` |
+| `mode` | str or None | `None` | Set to `'infer'` for causal (no future data) inference |
 
-**Returns:**
+**Returns (default offline mode):**
 
 | Type | Output shape | Description |
 |------|--------------|-------------|
 | `'probability'` | $(T, N)$ | Gamma matrix — posterior probability of each state at each time step |
 | `'posterior'` | $(T,)$ | Argmax of gamma — most likely state per time step (independently) |
-| `'viterbi'` | $(T,)$ | Most likely **sequence** of states (globally optimal path) |
+| `'viterbi'` | $(T,)$ | Most likely **sequence** of states (globally optimal path via backtracking) |
+
+**Returns (causal mode, `mode='infer'`):**
+
+| Type | Output shape | Description |
+|------|--------------|-------------|
+| `'probability'` | $(T, N)$ | Scaled alpha — filtered state distribution using only past/present data |
+| `'posterior'` | $(T,)$ | Argmax of alpha — most likely state per time step (forward-only) |
+| `'viterbi'` | $(T,)$ | Greedy Viterbi — best state at each $t$ without backtracking |
 
 ### `plot_regimes(price, regimes, hmm=None, returns=None, gamma=None, index=None, title=None)`
 
