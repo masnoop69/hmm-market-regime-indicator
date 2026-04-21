@@ -17,9 +17,11 @@ A from-scratch implementation of a Gaussian Hidden Markov Model (HMM) in Python,
 9. [Computing Xi (ξ) — Transition Confidence](#9-computing-xi-ξ--transition-confidence)
 10. [The Baum-Welch Algorithm (EM)](#10-the-baum-welch-algorithm-em)
 11. [Decoding: Viterbi vs Posterior](#11-decoding-viterbi-vs-posterior)
-12. [Usage Guide](#12-usage-guide)
-13. [API Reference](#13-api-reference)
-14. [Future Improvements](#14-future-improvements)
+12. [Robust Estimation: The Student-t HMM](#12-robust-estimation-the-student-t-hmm)
+13. [Interpreting Model Diagnostics](#13-interpreting-model-diagnostics)
+14. [Usage Guide](#14-usage-guide)
+15. [API Reference](#15-api-reference)
+16. [Future Improvements](#16-future-improvements)
 
 ---
 
@@ -695,7 +697,99 @@ This is a **greedy** algorithm: it makes the locally optimal choice at each step
 
 ---
 
-## 12. Usage Guide
+## 12. Robust Estimation: The Student-t HMM
+
+### The Problem with Gaussians
+
+While a Gaussian HMM captures basic regime-switching dynamics, real-world financial returns suffer from a persistent problem: **fat tails and extreme outliers**. 
+
+A pure Gaussian distribution places effectively zero probability on extreme events like the 1987 Black Monday crash or the 2020 COVID-19 selloff. When the Baum-Welch algorithm attempts to fit a Gaussian HMM to data containing these massive outliers, the M-step variance equation ($\sigma^2$) is forced to dramatically inflate to "cover" the outlier. This ruins the statistical fit for the vast majority of normal trading days in that regime, leading to poor parameter estimation, overly wide confidence intervals, and false state classifications.
+
+### The Student's t-Distribution Solution
+
+To build a robust model, we replace the Gaussian emission distribution with a **Student's t-distribution** (`studentHMM`). The t-distribution introduces a third parameter per state, $\nu$ (degrees of freedom), which controls the "fatness" of the tails.
+
+- As $\nu \to \infty$, the t-distribution converges to a standard Normal (Gaussian).
+- As $\nu \to 2$ (the lower limit for finite variance), the tails become extremely heavy, comfortably accommodating extreme market shocks without corrupting the core parameters.
+
+### The Normal-Gamma Hierarchical Representation
+
+Unfortunately, computing the EM algorithm directly on the t-distribution density function is mathematically intractable because there is no closed-form solution for the M-step updates. 
+
+To solve this, we exploit a mathematical property: **A Student's t-distribution can be represented as an infinite mixture of Gaussians with a shared mean, but differing variances governed by a latent random variable $u$.**
+
+Specifically, if an observation $O_t$ follows a t-distribution, it can be hierarchically constructed as:
+1. Sample a precision weight $u_t$ from a Gamma distribution: $u_t \sim \text{Gamma}(\frac{\nu}{2}, \frac{\nu}{2})$
+2. Sample $O_t$ from a Normal distribution scaled by $1/u_t$: $O_t \sim \mathcal{N}\left(\mu, \frac{\sigma^2}{u_t}\right)$
+
+By treating the scaling factor $u_t$ as a latent (hidden) variable alongside our hidden regime states $q_t$, we seamlessly introduce a new layer of Bayesian inference into the EM algorithm.
+
+### The Robust E-Step
+
+In the E-step, alongside computing $\gamma$ (state confidence) and $\xi$ (transition confidence), we now compute the posterior expectation of the precision weight $u_t$ for each regime $j$:
+
+$$E[u_{tj}] = \frac{\nu_j + 1}{\nu_j + \delta_{tj}^2} \quad \text{where} \quad \delta_{tj}^2 = \frac{(O_t - \mu_j)^2}{\sigma_j^2}$$
+
+This formula is the secret engine of the Student-t HMM. $\delta_{tj}^2$ is the squared Mahalanobis distance — how far the observation $O_t$ is from the regime's mean relative to the regime's scale. 
+
+If $O_t$ is an extreme outlier, $\delta_{tj}^2$ becomes massive. Consequently, the expected precision $E[u_{tj}]$ **drops exponentially toward zero**.
+
+### The Robust M-Step
+When we update the regime parameters in the M-step, the equations are modified to incorporate $E[u_{tj}]$:
+
+$$\mu_j^* = \frac{\sum_{t=0}^{T-1} \gamma_t(j) \cdot E[u_{tj}] \cdot O_t}{\sum_{t=0}^{T-1} \gamma_t(j) \cdot E[u_{tj}]}$$
+
+$$\hat{\sigma}_j^2 = \frac{\sum_{t=0}^{T-1} \gamma_t(j) \cdot E[u_{tj}] \cdot (O_t - \hat{\mu}_j)^2}{\sum_{t=0}^{T-1} \gamma_t(j)}$$
+
+Notice the presence of $E[u_{tj}]$ acting as an **automatic discounting weight**. Because $E[u_{tj}]$ drops to near-zero for massive outliers, those anomalous observations are structurally muted and suppressed during the M-step re-estimation. The model smoothly absorbs the shock without polluting $\mu_j$ or artificially inflating $\sigma_j^2$.
+
+The degrees of freedom $\nu_j$ are then strictly optimized using univariate root-finding (Brent's Method) on the partial derivative of the expected log-likelihood.
+
+### Understanding Effective Volatility ($\sigma_{\text{eff}}$)
+
+When interpreting the Student-t HMM, the scale parameter $\sigma$ **is not the actual standard deviation of the returns**. Due to the fat tails, the true variance of a t-distribution is inflated. 
+
+The physical standard deviation of the regime is represented by the **effective volatility** ($\sigma_{\text{eff}}$), valid only for $\nu > 2$:
+
+$$\sigma_{\text{eff}} = \sigma \sqrt{\frac{\nu}{\nu - 2}}$$
+
+For a regime with $\nu = 3$, the effective volatility is $\sqrt{3} \approx 1.73$ times larger than the nominal scale parameter $\sigma$.
+
+---
+
+## 13. Interpreting Model Diagnostics
+
+Validating the integrity of an HMM requires evaluating whether the segmented regime observations actually respect the statistical assumptions bounded by the model parameters. The `hmm_plot.plot_regime_diagnostics` command acts as a comprehensive verification suite to check this dynamically. Instead of relying solely on visualizations, it prints a battery of formal tests directly to your standard output.
+
+### 1. Q-Q Plots (Quantile-Quantile)
+The Q-Q plot compares the empirical distribution of observations uniquely assigned to a specific regime against the theoretical assumed distribution (Normal or Student-T with degree $\nu$). 
+
+| Q-Q Plot Pattern | Statistical Interpretation | Market Meaning for Regime |
+| :--- | :--- | :--- |
+| **Hugs the dashed red line** | **Ideal Fit** | The regime's returns match the assumed theoretical distribution optimally. |
+| **S-Shape / Bowed Tails (steep ends)** | **Heavy Tails (Excess Kurtosis)** | The market is experiencing extreme outliers (crashes/surges) far beyond what the model expects. Common when using `gaussianHMM`. |
+| **C-Shape / Curved (U-Shape)** | **Skewness** | Returns are asymmetrical. An upward bow indicates right skew (positive shocks), while a downward bow indicates left skew (crash structure). |
+| **Flat Ends (horizontal tailing)** | **Light Tails (Platykurtic)** | The regime has fewer extreme values than the model anticipates. Very rare in financial returns. |
+
+*   **Tails Deviating (Excess Kurtosis):** If points deviate severely at the tails in a `gaussianHMM` (exhibiting the S-Shape), the regime contains far more extreme values than the Gaussian can account for. The solution is migrating to a `studentHMM`. If deviations persist even in the `studentHMM`, it signifies that the empirical outliers are too irregular or the model is overfit for the dynamically optimized DoF $\nu$.
+
+### 2. ACF (Autocorrelation Function)
+An HMM structurally assumes that observations are **conditionally independent** given the hidden state. In other words, knowing today's observation inside Regime 0 should give no predictive basis for tomorrow's observation *assuming we stay in Regime 0*.
+*   **Ideal Fit:** The vertical stem bars completely vanish within the trailing 95% confidence bounds (dashed white lines).
+*   **Significant Bars outside Bounds:** If the ACF repeatedly breaches the confidence intervals, your observations contain direct serial correlation.
+
+### 3. PACF (Partial Autocorrelation Function)
+PACF plots the predictive relationship between $O_t$ and $O_{t-k}$ *after completely removing the predictive effects of all intermediate observations* intervening between $t$ and $t-k$. 
+*   **Interpreting Breaches:** Sharp, solitary breaches at lower lags (e.g. lag 1 or 2) in the PACF commonly diagnose the true order of an underlying AutoRegressive (AR) process. If you continuously observe strong PACF structures, it confirms the presence of linear dependencies completely unaccounted for by the Markov state.
+
+### 4. Statistical Battery (Console Output)
+*   **Ljung-Box Test:** A quantitative formalization of the ACF/PACF visual plots. (Null Hypothesis = Data acts as independent White Noise). $P < 0.05$ strictly confirms serial correlation.
+*   **Shapiro-Wilk / KS Test:** Formalized goodness of fit tests scoring how well the regime matches the Normal/Student-T distributions. (Null Hypothesis = Data fits the distribution).
+*   **Jarque-Bera Test:** A goodness-of-fit test focused on skewness and kurtosis to determine if the regime matches a normal distribution. (Null Hypothesis = Data is normally distributed). $P < 0.05$ confirms the presence of fat tails or asymmetry.
+
+---
+
+## 14. Usage Guide
 
 ### Installation
 
@@ -713,7 +807,7 @@ yfinance (for data download)
 ### Quick Start
 
 ```python
-from HMM import gaussianHMM, plot_regimes
+from HMM import gaussianHMM, studentHMM, hmm_plot
 import yfinance as yf
 import numpy as np
 
@@ -724,8 +818,8 @@ spy = yf.download('^GSPC', start='2000-12-31', end='2020-12-31')
 returns = np.log(spy['Close'] / spy['Close'].shift(1)).dropna()
 close = spy['Close'].dropna()
 
-# 3. Initialize and fit the model
-hmm = gaussianHMM(n_states=3, max_iter=100, tol=1e-6)
+# 3. Initialize and fit the robust Student-T model
+hmm = studentHMM(n_states=3, max_iter=200, tol=1e-6)
 hmm.fit(returns, sort='sharpe')
 
 # 4. Predict regimes (offline — uses full dataset including future)
@@ -736,14 +830,21 @@ probability_states = hmm.predict(returns, type='probability')
 causal_states = hmm.predict(returns, type='viterbi', mode='infer')
 causal_proba = hmm.predict(returns, type='probability', mode='infer')
 
-# 6. Visualize
-plot_regimes(
+# 6. Visualize (using the hmm_plot graphing suite)
+hmm_plot.plot_regimes(
     close,
     viterbi_states,
     hmm=hmm,
     returns=returns,
     gamma=probability_states,
     title="S&P 500 — HMM Market Regimes"
+)
+
+# 7. Chart Diagnostic Testing (QQ, ACF, PACF) over each regime
+hmm_plot.plot_regime_diagnostics(
+    returns, 
+    probability_states, 
+    hmm=hmm
 )
 ```
 
@@ -768,26 +869,30 @@ The color palette runs from **red** (worst regime) → **yellow** → **green** 
 
 ---
 
-## 13. API Reference
+## 15. API Reference
 
-### `gaussianHMM(n_states=5, max_iter=100, tol=1e-6)`
+### `gaussianHMM(...)` and `studentHMM(...)`
+
+Both models share the exact same interface. Initializing `studentHMM` is heavily recommended for robustness against market tail-risk.
 
 **Constructor parameters:**
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `n_states` | int | 5 | Number of hidden states (regimes) |
+| `n_states` | int | 5 (or 3) | Number of hidden states (regimes) |
 | `max_iter` | int | 100 | Maximum EM iterations |
 | `tol` | float | 1e-6 | Convergence threshold for log-likelihood change |
 
-### `.fit(X, sort='mu')`
+### `.fit(X, sort='mu', verbose=True, **init_kwargs)`
 
-Fit the HMM to observation sequence `X` using Baum-Welch.
+Fit the HMM to observation sequence `X` using the Expectation-Maximization (Baum-Welch) algorithm.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `X` | array-like | Observation sequence (e.g., log returns) |
 | `sort` | str | Sort states after fitting: `'mu'`, `'sigma'`, `'sharpe'`, or `None` |
+| `verbose` | bool | If true, logs the training variables to terminal |
+| `pi, A, mu, sigma, nu` | kwargs | Optional, pass matrix initialization states manually |
 
 **Returns:** `self` (fitted model)
 
@@ -795,7 +900,8 @@ Fit the HMM to observation sequence `X` using Baum-Welch.
 - `hmm.pi` — Initial state distribution $(N,)$
 - `hmm.A` — Transition matrix $(N, N)$
 - `hmm.mu` — State means $(N,)$
-- `hmm.sigma` — State standard deviations $(N,)$
+- `hmm.sigma` — State standard deviations / t-dist scales $(N,)$
+- `hmm.nu` — State degrees of freedom $(N,)$ — **(`studentHMM` only)**
 
 ### `.predict(X, type='probability', mode=None)`
 
@@ -823,7 +929,9 @@ Predict hidden states for observation sequence `X` using the fitted parameters.
 | `'posterior'` | $(T,)$ | Argmax of alpha — most likely state per time step (forward-only) |
 | `'viterbi'` | $(T,)$ | Greedy Viterbi — best state at each $t$ without backtracking |
 
-### `plot_regimes(price, regimes, hmm=None, returns=None, gamma=None, index=None, title=None)`
+### Visualization API (`hmm_plot` class)
+
+#### `hmm_plot.plot_regimes(price, regimes, hmm=None, returns=None, gamma=None, index=None, title=None)`
 
 Standalone visualization function for regime overlay plots.
 
@@ -831,15 +939,26 @@ Standalone visualization function for regime overlay plots.
 |-----------|------|-------------|
 | `price` | array-like / pd.Series | Price series for the top panel |
 | `regimes` | array-like (int) | State labels per time step |
-| `hmm` | gaussianHMM (optional) | Fitted model — if provided, shows $\mu$/$\sigma$ in legend |
+| `hmm` | gaussianHMM/studentHMM | Fitted model — if provided, shows $\mu$ and $\sigma_{\text{eff}}$ in legend |
 | `returns` | array-like (optional) | If provided, adds a returns panel at the bottom |
 | `gamma` | $(T, N)$ array (optional) | If provided, adds a state probability panel in the middle |
-| `index` | array-like (optional) | X-axis labels — auto-detected from price if omitted |
 | `title` | str (optional) | Chart title |
+
+#### `hmm_plot.plot_regime_diagnostics(observations, regime_probs, hmm=None, ...)`
+
+Generates an advanced 3-row diagnostic panel verifying the residuals of each segmented regime against its assumed distribution.
+
+| Row | Content | Description |
+|-------|---------|--------------| 
+| 1 | Q-Q Plot | Compares regime samples against target Theoretical Quantiles (Normal or t-Distribution) |
+| 2 | ACF Plot | Autocorrelation Function visualizes serial dependencies in state observation residuals |
+| 3 | PACF Plot | Partial Autocorrelation plots the direct effect of lagged state observations |
+
+*Note*: Extensive statistical battery tests (KS, Shapiro-Wilk, Jarque-Bera, Ljung-Box) are logged directly to the standard output during chart generation.
 
 ---
 
-## 14. Future Improvements
+## 16. Future Improvements
 
 Several extensions could meaningfully improve its accuracy and practical utility for regime-based risk management or alpha-generation.
 
