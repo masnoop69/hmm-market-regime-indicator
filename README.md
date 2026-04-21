@@ -1,6 +1,6 @@
-# Gaussian Hidden Markov Model for Market Regime Detection
+# Hidden Markov Model for Market Regime Detection
 
-A from-scratch implementation of a Gaussian Hidden Markov Model (HMM) in Python, designed for identifying market regimes in financial time series. Built with NumPy and SciPy, this package uses the Baum-Welch (EM) algorithm for parameter estimation, and supports Viterbi and Posterior decoding for state prediction.
+A from-scratch implementation of a Gaussian and Studentized Hidden Markov Model (HMM) in Python, designed for identifying market regimes in financial time series. Built with NumPy and SciPy, this package uses the Baum-Welch (EM) algorithm for parameter estimation, and supports Viterbi and Posterior decoding for state prediction. Includes plot functions for model diagnostics.
 
 ---
 
@@ -17,7 +17,7 @@ A from-scratch implementation of a Gaussian Hidden Markov Model (HMM) in Python,
 9. [Computing Xi (ξ) — Transition Confidence](#9-computing-xi-ξ--transition-confidence)
 10. [The Baum-Welch Algorithm (EM)](#10-the-baum-welch-algorithm-em)
 11. [Decoding: Viterbi vs Posterior](#11-decoding-viterbi-vs-posterior)
-12. [Robust Estimation: The Student-t HMM](#12-robust-estimation-the-student-t-hmm)
+12. [Student-t HMM](#12-robust-estimation-the-student-t-hmm)
 13. [Interpreting Model Diagnostics](#13-interpreting-model-diagnostics)
 14. [Usage Guide](#14-usage-guide)
 15. [API Reference](#15-api-reference)
