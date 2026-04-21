@@ -124,6 +124,9 @@ Understanding these relationships is crucial because the entire HMM pipeline is 
 
 ## 3. What is a Hidden Markov Model?
 
+<img width="1123" height="900" alt="image" src="https://github.com/user-attachments/assets/aaf55a67-d956-4a03-9c06-0bbefd7230ae" />
+
+
 ### The Problem: We Can't See the Market's State
 
 At any point in time, the market is arguably in some "state" or "regime" — maybe a bullish trend, a volatile correction, a quiet consolidation, or an outright crash. But we never observe these states directly. What we *do* observe are the returns: the noisy outputs that these hidden regimes generate.
@@ -699,6 +702,9 @@ This is a **greedy** algorithm: it makes the locally optimal choice at each step
 
 ## 12. Robust Estimation: The Student-t HMM
 
+<img width="1423" height="900" alt="newplot" src="https://github.com/user-attachments/assets/53ca2abd-26d9-4573-9b3c-f3d07a448d1f" />
+
+
 ### The Problem with Gaussians
 
 While a Gaussian HMM captures basic regime-switching dynamics, real-world financial returns suffer from a persistent problem: **fat tails and extreme outliers**. 
@@ -760,6 +766,9 @@ For a regime with $\nu = 3$, the effective volatility is $\sqrt{3} \approx 1.73$
 ## 13. Interpreting Model Diagnostics
 
 Validating the integrity of an HMM requires evaluating whether the segmented regime observations actually respect the statistical assumptions bounded by the model parameters. The `hmm_plot.plot_regime_diagnostics` command acts as a comprehensive verification suite to check this dynamically. Instead of relying solely on visualizations, it prints a battery of formal tests directly to your standard output.
+
+<img width="1350" height="800" alt="image" src="https://github.com/user-attachments/assets/6579506b-c12c-422b-9b6a-9b8161ed750e" />
+
 
 ### 1. Q-Q Plots (Quantile-Quantile)
 The Q-Q plot compares the empirical distribution of observations uniquely assigned to a specific regime against the theoretical assumed distribution (Normal or Student-T with degree $\nu$). 
